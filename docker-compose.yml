@@ -1,5 +1,10 @@
+# --- docker-compose.yml ---
+
+version: "3.9"  # Specify the Docker Compose version
+
 volumes:
   etc_wireguard:
+  mongodb_data: # Add a volume for MongoDB data
 
 services:
   wg-easy:
@@ -33,10 +38,14 @@ services:
       # - ENABLE_PROMETHEUS_METRICS=false
       # - PROMETHEUS_METRICS_PASSWORD=$$2a$$12$$vkvKpeEAHD78gasyawIod.1leBMKg8sBwKW.pQyNsq78bXV3INf2G # (needs double $$, hash of 'prometheus_password'; see "How_to_generate_an_bcrypt_hash.md" for generate the hash)
 
+      # 🔑 MongoDB Connection
+      - MONGO_URI=mongodb://mongo:27017/wgeasy # Link to mongo service
+
     image: ghcr.io/wg-easy/wg-easy
     container_name: wg-easy
     volumes:
-      - etc_wireguard:/etc/wireguard
+      - etc_wireguard:/etc/wireguard  # Still useful for wg0.conf and scripts.
+      # - ./data/:/etc/wireguard # Remove this when you remove fs functions.
     ports:
       - "51820:51820/udp"
       - "51821:51821/tcp"
@@ -48,3 +57,14 @@ services:
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
+    depends_on:
+      - mongo
+
+  mongo:
+    image: mongo:latest
+    container_name: mongo
+    volumes:
+      - mongodb_data:/data/db
+    ports:
+      - "27017:27017"
+    restart: unless-stopped

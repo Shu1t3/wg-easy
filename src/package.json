@@ -21,6 +21,7 @@
     "debug": "^4.3.7",
     "express-session": "^1.18.1",
     "h3": "^1.13.0",
+    "mongoose": "^8.10.0",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {

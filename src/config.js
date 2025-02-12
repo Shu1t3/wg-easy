@@ -4,7 +4,7 @@ const { release: { version } } = require('./package.json');
 
 module.exports.RELEASE = version;
 module.exports.PORT = process.env.PORT || '51821';
-module.exports.WEBUI_HOST = process.env.WEBUI_HOST || '0.0.0.0';
+module.exports.WEBUI_HOST = process.env.WEBUI_HOST || '0.0.0.0'; // Use 0.0.0.0 or undefined, not 'undefined'
 /** This is only kept for migration purpose. DO NOT USE! */
 module.exports.PASSWORD = process.env.PASSWORD;
 module.exports.PASSWORD_HASH = process.env.PASSWORD_HASH;
@@ -45,3 +45,4 @@ module.exports.UI_ENABLE_SORT_CLIENTS = process.env.UI_ENABLE_SORT_CLIENTS || 'f
 module.exports.WG_ENABLE_EXPIRES_TIME = process.env.WG_ENABLE_EXPIRES_TIME || 'false';
 module.exports.ENABLE_PROMETHEUS_METRICS = process.env.ENABLE_PROMETHEUS_METRICS || 'false';
 module.exports.PROMETHEUS_METRICS_PASSWORD = process.env.PROMETHEUS_METRICS_PASSWORD;
+module.exports.MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/wgeasy';

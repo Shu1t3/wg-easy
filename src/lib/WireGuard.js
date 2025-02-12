@@ -1,6 +1,8 @@
+// --- lib_WireGuard.js ---
+
 'use strict';
 
-const fs = require('node:fs/promises');
+const fs = require('node:fs/promises'); // Ensure this is still used for initial setup
 const path = require('path');
 const debug = require('debug')('WireGuard');
 const crypto = require('node:crypto');
@@ -9,6 +11,9 @@ const CRC32 = require('crc-32');
 
 const Util = require('./Util');
 const ServerError = require('./ServerError');
+
+// MongoDB connection
+const mongoose = require('mongoose');
 
 const {
   WG_PATH,
@@ -26,9 +31,47 @@ const {
   WG_POST_DOWN,
   WG_ENABLE_EXPIRES_TIME,
   WG_ENABLE_ONE_TIME_LINKS,
+  MONGO_URI,
 } = require('../config');
 
+
+// MongoDB Schema
+const wireguardSchema = new mongoose.Schema({
+  server: {
+    privateKey: { type: String, required: true },
+    publicKey: { type: String, required: true },
+    address: { type: String, required: true },
+  },
+  clients: { type: Map, of: Object, default: {} },  // Store clients as a Map within MongoDB
+}, { collection: 'wireguard' }); // Optionally specify a collection name
+
+const WireguardConfig = mongoose.model('WireguardConfig', wireguardSchema);
+
 module.exports = class WireGuard {
+
+  constructor() {
+    this.dbConnected = false;
+    this.connectToDatabase();
+  }
+
+  async connectToDatabase(retryCount = 0) {
+    try {
+      await mongoose.connect(MONGO_URI);
+      console.log('Connected to MongoDB');
+      this.dbConnected = true;
+    } catch (error) {
+      console.error('MongoDB connection error:', error);
+      this.dbConnected = false;
+
+      if (retryCount < 5) {
+        console.log(`Retrying MongoDB connection in 5 seconds (attempt ${retryCount + 1})...`);
+        await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
+        await this.connectToDatabase(retryCount + 1); // Retry
+      } else {
+        console.error('Failed to connect to MongoDB after multiple retries.');
+      }
+    }
+  }
 
   async __buildConfig() {
     this.__configPromise = Promise.resolve().then(async () => {
@@ -38,11 +81,19 @@ module.exports = class WireGuard {
 
       debug('Loading configuration...');
       let config;
-      try {
-        config = await fs.readFile(path.join(WG_PATH, 'wg0.json'), 'utf8');
-        config = JSON.parse(config);
-        debug('Configuration loaded.');
-      } catch (err) {
+
+      if (this.dbConnected) {
+        // Load from MongoDB
+        config = await WireguardConfig.findOne({});
+        if (config) {
+          debug('Configuration loaded from MongoDB.');
+          config = config.toObject(); // Convert to plain JS object
+        }
+      }
+
+
+      if (!config) {
+        // If not found in MongoDB or MongoDB is unavailable, initialize and store in MongoDB *and* the file.
         const privateKey = await Util.exec('wg genkey');
         const publicKey = await Util.exec(`echo ${privateKey} | wg pubkey`, {
           log: 'echo ***hidden*** | wg pubkey',
@@ -57,7 +108,25 @@ module.exports = class WireGuard {
           },
           clients: {},
         };
+
+        if (this.dbConnected) {
+          const newConfig = new WireguardConfig(config);
+          await newConfig.save();
+          debug('New configuration generated and saved to MongoDB.');
+        }
+
         debug('Configuration generated.');
+      }
+
+      //Fallback: Save to File. Make sure the file exists for initial startup
+      if (!this.dbConnected){
+          try {
+            await fs.writeFile(path.join(WG_PATH, 'wg0.json'), JSON.stringify(config, false, 2), {
+              mode: 0o660,
+            });
+          } catch (e){
+            console.error('Failed to save file wg0.json. This will result in config being reset every restart.', e);
+          }
       }
 
       return config;
@@ -70,7 +139,8 @@ module.exports = class WireGuard {
     if (!this.__configPromise) {
       const config = await this.__buildConfig();
 
-      await this.__saveConfig(config);
+      await this.__saveConfig(config); //Always ensure the config is properly saved
+
       await Util.exec('wg-quick down wg0').catch(() => {});
       await Util.exec('wg-quick up wg0').catch((err) => {
         if (err && err.message && err.message.includes('Cannot find device "wg0"')) {
@@ -79,10 +149,6 @@ module.exports = class WireGuard {
 
         throw err;
       });
-      // await Util.exec(`iptables -t nat -A POSTROUTING -s ${WG_DEFAULT_ADDRESS.replace('x', '0')}/24 -o ' + WG_DEVICE + ' -j MASQUERADE`);
-      // await Util.exec('iptables -A INPUT -p udp -m udp --dport 51820 -j ACCEPT');
-      // await Util.exec('iptables -A FORWARD -i wg0 -j ACCEPT');
-      // await Util.exec('iptables -A FORWARD -o wg0 -j ACCEPT');
       await this.__syncConfig();
     }
 
@@ -124,9 +190,31 @@ ${client.preSharedKey ? `PresharedKey = ${client.preSharedKey}\n` : ''
     }
 
     debug('Config saving...');
-    await fs.writeFile(path.join(WG_PATH, 'wg0.json'), JSON.stringify(config, false, 2), {
-      mode: 0o660,
-    });
+
+    // Save to MongoDB
+    if (this.dbConnected) {
+      try {
+        await WireguardConfig.updateOne({}, {
+          $set: {
+            server: config.server,
+            clients: config.clients,  // Save the clients as a Map
+          },
+        }, { upsert: true });
+        debug('Configuration saved to MongoDB.');
+      } catch (error) {
+        console.error('Error saving to MongoDB:', error);
+      }
+    }
+
+    // Always save to file for backwards compatibility and initial setup purposes. This file should be considered a backup or "source of truth" for the initial configuration.
+    try {
+      await fs.writeFile(path.join(WG_PATH, 'wg0.json'), JSON.stringify(config, false, 2), {
+        mode: 0o660,
+      });
+    } catch (e){
+      console.error('Failed to save wg0.json. Please ensure the file exists and is writeable.', e);
+    }
+
     await fs.writeFile(path.join(WG_PATH, 'wg0.conf'), result, {
       mode: 0o600,
     });
@@ -285,6 +373,7 @@ Endpoint = ${WG_HOST}:${WG_CONFIG_PORT}`;
       client.expiredAt.setMinutes(59);
       client.expiredAt.setSeconds(59);
     }
+
     config.clients[id] = client;
 
     await this.saveConfig();
