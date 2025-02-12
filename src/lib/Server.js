@@ -6,6 +6,7 @@ const basicAuth = require('basic-auth');
 const { createServer } = require('node:http');
 const { stat, readFile } = require('node:fs/promises');
 const { resolve, sep } = require('node:path');
+const Util = require('./Util');
 
 const expressSession = require('express-session');
 const debug = require('debug')('Server');
@@ -68,6 +69,48 @@ const cronJobEveryMinute = async () => {
   await WireGuard.cronJobEveryMinute();
   setTimeout(cronJobEveryMinute, 60 * 1000);
 };
+
+function isValidConfig(config) {
+  if (!config || typeof config !== 'object') {
+      return false;
+  }
+
+  // Проверка server
+  if (!config.server || typeof config.server !== 'object' ||
+      !config.server.privateKey || typeof config.server.privateKey !== 'string' ||
+      !config.server.publicKey || typeof config.server.publicKey !== 'string' ||
+      !config.server.address || typeof config.server.address !== 'string' ||
+      !Util.isValidIPv4(config.server.address)) {
+      return false;
+  }
+
+  // Проверка clients
+  if (!config.clients || typeof config.clients !== 'object') {
+      return false;
+  }
+
+  for (const clientId in config.clients) {
+      const client = config.clients[clientId];
+      if (!client || typeof client !== 'object' ||
+          !client.id || typeof client.id !== "string" ||
+          !client.name || typeof client.name !== "string" ||
+          !client.address || typeof client.address !== "string" ||
+          !Util.isValidIPv4(client.address) ||
+          !client.privateKey || typeof client.privateKey !== "string" ||
+          !client.publicKey || typeof client.publicKey !== "string" ||
+          typeof client.enabled !== "boolean"
+         )
+      {
+          return false;
+      }
+      // Проверяем preSharedKey на наличие и тип
+      if (client.hasOwnProperty('preSharedKey') && typeof client.preSharedKey !== 'string') {
+            return false;
+        }
+  }
+
+  return true;
+}
 
 module.exports = class Server {
 
@@ -401,66 +444,29 @@ module.exports = class Server {
       }))
       .put('/api/wireguard/restore', defineEventHandler(async (event) => {
         try {
-          const body = await readBody(event);
-
+          const body = await readBody(event); // body - это { file: parsedConfig }
+      
           if (!body || typeof body !== 'object' || !body.file) {
             throw createError({ statusCode: 400, message: 'Invalid request body.  Must be an object with a "file" property.' });
           }
-
-          let parsedConfig;
-          try {
-            parsedConfig = JSON.parse(body.file);
-          } catch (parseError) {
-            throw createError({ statusCode: 400, message: 'Invalid JSON in "file" property.' });
-          }
-
-          if (!isValidConfig(parsedConfig)) { // isValidConfig - твоя функция валидации.
+      
+          const parsedConfig = body.file; // body.file - это УЖЕ ОБЪЕКТ конфигурации
+      
+          if (!isValidConfig(parsedConfig)) {
              throw createError({statusCode: 400, message: 'Invalid configuration data.'});
           }
-
-          await WireGuard.restoreConfiguration(parsedConfig);
+      
+          await WireGuard.restoreConfiguration(parsedConfig); // Передаем ОБЪЕКТ
           return { success: true };
-
+      
         } catch (error) {
-          console.error('Error restoring configuration:', error);
+            console.error("API Error /api/wireguard/restore:", error);
             throw createError({
               statusCode: error.statusCode || 500,
               message: error.message || 'Internal Server Error',
-          });
+            });
         }
       }));
-
-      function isValidConfig(config) {
-        if (!config || typeof config !== 'object') {
-          return false;
-        }
-
-        if (!config.server || typeof config.server !== 'object' ||
-            !config.server.privateKey || typeof config.server.privateKey !== 'string' ||
-            !config.server.publicKey || typeof config.server.publicKey !== 'string' ||
-            !config.server.address || typeof config.server.address !== 'string') {
-            return false
-        }
-        if (!config.clients || typeof config.clients !== 'object'){ // Проверяем, что clients - объект
-            return false;
-        }
-
-        for (const clientId in config.clients){
-            const client = config.clients[clientId];
-            if (!client || typeof client !== 'object'
-            || !client.id || typeof client.id !== "string"
-            || !client.name || typeof client.name !== "string"
-            || !client.address || typeof client.address !== "string"
-            || !client.privateKey || typeof client.privateKey !== "string"
-            || !client.publicKey || typeof client.publicKey !== "string"
-            || typeof client.enabled !== "boolean"
-            ){
-                return false;
-            }
-        }
-        //  Добавь больше проверок! (preSharedKey, allowedIPs, типы данных, форматы и т.д.)
-        return true;
-    }
 
     // Static assets
     const publicDir = '/app/www';

@@ -177,11 +177,11 @@ class API {
     });
   }
 
-  async restoreConfiguration(file) {
+  async restoreConfiguration(data) {
     return this.call({
       method: 'put',
       path: '/wireguard/restore',
-      body: { file },
+      body: data,
     });
   }
 

@@ -450,12 +450,12 @@ Endpoint = ${WG_HOST}:${WG_CONFIG_PORT}`;
         if (!_config || typeof _config !== 'object' || !_config.server || !_config.clients) {
             throw new ServerError('Invalid configuration file format', 400);
         }
-        _config.clients = Object.fromEntries(_config.clients); // Обязательно!
+
         await this.__saveConfig(_config);
         await this.__reloadConfig();
     } catch (error){
         console.error('Error restoring configuration:', error);
-        throw new ServerError(`Failed to restore WireGuard configuration: ${error.message}`, error.statusCode || 500); // Pass through status code
+        throw new ServerError(`Failed to restore WireGuard configuration: ${error.message}`, error.statusCode || 500);
     }
     debug('Configuration restore process completed.');
   }
@@ -463,7 +463,6 @@ Endpoint = ${WG_HOST}:${WG_CONFIG_PORT}`;
   async backupConfiguration() {
     debug('Starting configuration backup.');
     const config = await this.getConfig();
-    //НЕ НУЖНО config.clients = new Map(Object.entries(config.clients));  // Удали эту строку!
     const backup = JSON.stringify(config, null, 2);
     debug('Configuration backup completed.');
     return backup;

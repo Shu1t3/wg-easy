@@ -348,7 +348,17 @@ new Vue({
       if (file) {
         file.text()
           .then((content) => {
-            this.api.restoreConfiguration(content)
+            let parsedConfig;
+            try {
+              parsedConfig = JSON.parse(content);
+            } catch (parseError) {
+              alert('Invalid JSON in backup file!');
+              return;
+            }
+
+            const dataToSend = { file: parsedConfig };
+
+            this.api.restoreConfiguration(dataToSend)
               .then((_result) => alert('The configuration was updated.'))
               .catch((err) => alert(err.message || err.toString()))
               .finally(() => this.refresh().catch(console.error));
