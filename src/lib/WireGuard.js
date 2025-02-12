@@ -1,9 +1,5 @@
-// --- lib_WireGuard.js ---
-
 'use strict';
 
-const fs = require('node:fs/promises'); // Ensure this is still used for initial setup
-const path = require('path');
 const debug = require('debug')('WireGuard');
 const crypto = require('node:crypto');
 const QRCode = require('qrcode');
@@ -16,7 +12,6 @@ const ServerError = require('./ServerError');
 const mongoose = require('mongoose');
 
 const {
-  WG_PATH,
   WG_HOST,
   WG_PORT,
   WG_CONFIG_PORT,
@@ -42,8 +37,8 @@ const wireguardSchema = new mongoose.Schema({
     publicKey: { type: String, required: true },
     address: { type: String, required: true },
   },
-  clients: { type: Map, of: Object, default: {} },  // Store clients as a Map within MongoDB
-}, { collection: 'wireguard' }); // Optionally specify a collection name
+  clients: { type: Map, of: Object, default: {} },
+}, { collection: 'wireguard' });
 
 const WireguardConfig = mongoose.model('WireguardConfig', wireguardSchema);
 
@@ -51,144 +46,113 @@ module.exports = class WireGuard {
 
   constructor() {
     this.dbConnected = false;
-    this.connectToDatabase();
-  }
-
-  async connectToDatabase(retryCount = 0) {
-    try {
-      await mongoose.connect(MONGO_URI);
-      console.log('Connected to MongoDB');
-      this.dbConnected = true;
-    } catch (error) {
-      console.error('MongoDB connection error:', error);
-      this.dbConnected = false;
-
-      if (retryCount < 5) {
-        console.log(`Retrying MongoDB connection in 5 seconds (attempt ${retryCount + 1})...`);
-        await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
-        await this.connectToDatabase(retryCount + 1); // Retry
-      } else {
-        console.error('Failed to connect to MongoDB after multiple retries.');
-      }
-    }
   }
 
   async __buildConfig() {
-    this.__configPromise = Promise.resolve().then(async () => {
-      if (!WG_HOST) {
-        throw new Error('WG_HOST Environment Variable Not Set!');
-      }
-
-      debug('Loading configuration...');
-      let config;
-
-      if (this.dbConnected) {
-        // Load from MongoDB
-        config = await WireguardConfig.findOne({});
-        if (config) {
-          debug('Configuration loaded from MongoDB.');
-          config = config.toObject(); // Convert to plain JS object
-        }
-      }
-
-
-      if (!config) {
-        // If not found in MongoDB or MongoDB is unavailable, initialize and store in MongoDB *and* the file.
-        const privateKey = await Util.exec('wg genkey');
-        const publicKey = await Util.exec(`echo ${privateKey} | wg pubkey`, {
-          log: 'echo ***hidden*** | wg pubkey',
-        });
-        const address = WG_DEFAULT_ADDRESS.replace('x', '1');
-
-        config = {
-          server: {
-            privateKey,
-            publicKey,
-            address,
-          },
-          clients: {},
-        };
-
-        if (this.dbConnected) {
-          const newConfig = new WireguardConfig(config);
-          await newConfig.save();
-          debug('New configuration generated and saved to MongoDB.');
+      this.__configPromise = Promise.resolve().then(async () => {
+        if (!WG_HOST) {
+          throw new Error('WG_HOST Environment Variable Not Set!');
         }
 
-        debug('Configuration generated.');
-      }
+        debug('Loading configuration...');
+        let config;
 
-      //Fallback: Save to File. Make sure the file exists for initial startup
-      if (!this.dbConnected){
-          try {
-            await fs.writeFile(path.join(WG_PATH, 'wg0.json'), JSON.stringify(config, false, 2), {
-              mode: 0o660,
-            });
-          } catch (e){
-            console.error('Failed to save file wg0.json. This will result in config being reset every restart.', e);
+        //  Подключение к MongoDB с повторными попытками.
+        let retryCount = 0;
+        const maxRetries = 5;
+        const retryDelay = 5000; // 5 seconds
+
+        while (retryCount <= maxRetries) {
+            try {
+              await mongoose.connect(MONGO_URI);
+              console.log('Connected to MongoDB');
+              this.dbConnected = true;
+              break; // Successful connection, exit loop
+            } catch (error) {
+              console.error('MongoDB connection error:', error);
+              this.dbConnected = false;
+              retryCount++;
+
+              if (retryCount <= maxRetries) {
+                  console.log(`Retrying MongoDB connection in ${retryDelay/1000} seconds (attempt ${retryCount})...`);
+                  await new Promise(resolve => setTimeout(resolve, retryDelay));
+              } else {
+                  console.error('Failed to connect to MongoDB after multiple retries.');
+                  throw new Error('Failed to connect to MongoDB after multiple retries.');  // Throw after all retries
+              }
+            }
+        }
+
+        // Загружаем конфиг ПОСЛЕ успешного подключения.
+        try {
+            config = await WireguardConfig.findOne({});
+            if (config) {
+              debug('Configuration loaded from MongoDB.');
+              config = config.toObject();
+              config.clients = Object.fromEntries(config.clients);
+            }
+          } catch (dbError) {
+            console.error('Error loading configuration from MongoDB:', dbError);
+            throw dbError;
           }
-      }
 
-      return config;
-    });
+          if (!config) {
+            console.warn('No configuration found in MongoDB. Generating new configuration.');
+            if (!this.dbConnected) {
+              throw new Error('Cannot save initial configuration: Not connected to MongoDB.');
+            }
+            try{
+                const privateKey = await Util.exec('wg genkey');
+                const publicKey = await Util.exec(`echo ${privateKey} | wg pubkey`, {
+                  log: 'echo ***hidden*** | wg pubkey',
+                });
+                const address = WG_DEFAULT_ADDRESS.replace('x', '1');
 
-    return this.__configPromise;
-  }
+                config = {
+                  server: {
+                    privateKey,
+                    publicKey,
+                    address,
+                  },
+                  clients: {},
+                };
+                const newConfig = new WireguardConfig(config);
+                await newConfig.save();
+                debug('New configuration generated and saved to MongoDB.');
+            } catch (error) {
+                console.error("Error creating or saving initial config", error);
+                throw error; // Re-throw for consistent error handling
+            }
+          }
+
+        return config;
+      });
+
+      return this.__configPromise;
+    }
 
   async getConfig() {
     if (!this.__configPromise) {
-      const config = await this.__buildConfig();
-
-      await this.__saveConfig(config); //Always ensure the config is properly saved
-
-      await Util.exec('wg-quick down wg0').catch(() => {});
-      await Util.exec('wg-quick up wg0').catch((err) => {
-        if (err && err.message && err.message.includes('Cannot find device "wg0"')) {
-          throw new Error('WireGuard exited with the error: Cannot find device "wg0"\nThis usually means that your host\'s kernel does not support WireGuard!');
-        }
-
-        throw err;
-      });
-      await this.__syncConfig();
+        await this.__buildConfig();
+        await this.saveConfig(); // Initial save after building
     }
-
     return this.__configPromise;
-  }
+}
+
 
   async saveConfig() {
     const config = await this.getConfig();
     await this.__saveConfig(config);
-    await this.__syncConfig();
-  }
+    try {
+        await applyWireGuardConfig(config); // Применяем новую конфигурацию
+
+    } catch (error) {
+        console.error('Error applying WireGuard configuration:', error); // Более точное сообщение
+        throw new ServerError('Failed to apply WireGuard configuration after save.', 500);  // Более точное сообщение
+    }
+}
 
   async __saveConfig(config) {
-    let result = `
-# Note: Do not edit this file directly.
-# Your changes will be overwritten!
-
-# Server
-[Interface]
-PrivateKey = ${config.server.privateKey}
-Address = ${config.server.address}/24
-ListenPort = ${WG_PORT}
-PreUp = ${WG_PRE_UP}
-PostUp = ${WG_POST_UP}
-PreDown = ${WG_PRE_DOWN}
-PostDown = ${WG_POST_DOWN}
-`;
-
-    for (const [clientId, client] of Object.entries(config.clients)) {
-      if (!client.enabled) continue;
-
-      result += `
-
-# Client: ${client.name} (${clientId})
-[Peer]
-PublicKey = ${client.publicKey}
-${client.preSharedKey ? `PresharedKey = ${client.preSharedKey}\n` : ''
-}AllowedIPs = ${client.address}/32`;
-    }
-
     debug('Config saving...');
 
     // Save to MongoDB
@@ -197,38 +161,21 @@ ${client.preSharedKey ? `PresharedKey = ${client.preSharedKey}\n` : ''
         await WireguardConfig.updateOne({}, {
           $set: {
             server: config.server,
-            clients: config.clients,  // Save the clients as a Map
+            clients: new Map(Object.entries(config.clients)),  // Save the clients as a Map
           },
         }, { upsert: true });
         debug('Configuration saved to MongoDB.');
       } catch (error) {
         console.error('Error saving to MongoDB:', error);
+        throw new ServerError('Failed to save configuration to MongoDB', 500); // More specific error
       }
     }
-
-    // Always save to file for backwards compatibility and initial setup purposes. This file should be considered a backup or "source of truth" for the initial configuration.
-    try {
-      await fs.writeFile(path.join(WG_PATH, 'wg0.json'), JSON.stringify(config, false, 2), {
-        mode: 0o660,
-      });
-    } catch (e){
-      console.error('Failed to save wg0.json. Please ensure the file exists and is writeable.', e);
-    }
-
-    await fs.writeFile(path.join(WG_PATH, 'wg0.conf'), result, {
-      mode: 0o600,
-    });
     debug('Config saved.');
   }
 
-  async __syncConfig() {
-    debug('Config syncing...');
-    await Util.exec('wg syncconf wg0 <(wg-quick strip wg0)');
-    debug('Config synced.');
-  }
 
   async getClients() {
-    const config = await this.getConfig();
+    const config = await this.__buildConfig();
     const clients = Object.entries(config.clients).map(([clientId, client]) => ({
       id: clientId,
       name: client.name,
@@ -252,9 +199,24 @@ ${client.preSharedKey ? `PresharedKey = ${client.preSharedKey}\n` : ''
     }));
 
     // Loop WireGuard status
-    const dump = await Util.exec('wg show wg0 dump', {
-      log: false,
-    });
+    let dump = '';
+    try {
+        dump = await Util.exec('wg show wg0 dump', {
+          log: false,
+        });
+    } catch (error) {
+        console.warn('Error getting WireGuard dump (likely interface is down):', error.message); // Use console.warn, not error
+        // Return the client list *without* handshake/transfer data.
+        return clients.map(client => ({
+            ...client,
+            latestHandshakeAt: null,
+            transferRx: null,
+            transferTx: null,
+            endpoint: null,
+            persistentKeepalive: null,
+        }));
+    }
+
     dump
       .trim()
       .split('\n')
@@ -324,80 +286,86 @@ Endpoint = ${WG_HOST}:${WG_CONFIG_PORT}`;
   }
 
   async createClient({ name, expiredDate }) {
-    if (!name) {
-      throw new Error('Missing: Name');
+      if (!name) {
+        throw new Error('Missing: Name');
+      }
+
+      const config = await this.getConfig();
+      let privateKey, publicKey, preSharedKey;
+
+      try {
+          privateKey = await Util.exec('wg genkey');
+          publicKey = await Util.exec(`echo ${privateKey} | wg pubkey`, {
+              log: 'echo ***hidden*** | wg pubkey',
+          });
+          preSharedKey = await Util.exec('wg genpsk');
+      } catch (execError) {
+          console.error("Error executing wg command:", execError);
+          throw new ServerError("Failed to execute WireGuard command.", 500);
+      }
+
+      // Calculate next IP
+      let address;
+      for (let i = 2; i < 255; i++) {
+        const client = Object.values(config.clients).find((client) => {
+          return client.address === WG_DEFAULT_ADDRESS.replace('x', i);
+        });
+
+        if (!client) {
+          address = WG_DEFAULT_ADDRESS.replace('x', i);
+          break;
+        }
+      }
+
+      if (!address) {
+        throw new Error('Maximum number of clients reached.');
+      }
+      // Create Client
+      const id = crypto.randomUUID();
+      const client = {
+        id,
+        name,
+        address,
+        privateKey,
+        publicKey,
+        preSharedKey,
+
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        expiredAt: null,
+        enabled: true,
+      };
+      if (expiredDate) {
+        client.expiredAt = new Date(expiredDate);
+        client.expiredAt.setHours(23);
+        client.expiredAt.setMinutes(59);
+        client.expiredAt.setSeconds(59);
+      }
+
+      config.clients[id] = client;
+
+      await this.saveConfig(); // Сохранили изменения + применили конфиг
+
+      return client;
     }
 
-    const config = await this.getConfig();
+  async deleteClient({ clientId }) {
+      const config = await this.getConfig();
 
-    const privateKey = await Util.exec('wg genkey');
-    const publicKey = await Util.exec(`echo ${privateKey} | wg pubkey`, {
-      log: 'echo ***hidden*** | wg pubkey',
-    });
-    const preSharedKey = await Util.exec('wg genpsk');
-
-    // Calculate next IP
-    let address;
-    for (let i = 2; i < 255; i++) {
-      const client = Object.values(config.clients).find((client) => {
-        return client.address === WG_DEFAULT_ADDRESS.replace('x', i);
-      });
-
-      if (!client) {
-        address = WG_DEFAULT_ADDRESS.replace('x', i);
-        break;
+      if (config.clients[clientId]) {
+        delete config.clients[clientId];
+        await this.saveConfig(); // Сохранили изменения + применили конфиг
       }
     }
 
-    if (!address) {
-      throw new Error('Maximum number of clients reached.');
-    }
-    // Create Client
-    const id = crypto.randomUUID();
-    const client = {
-      id,
-      name,
-      address,
-      privateKey,
-      publicKey,
-      preSharedKey,
-
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      expiredAt: null,
-      enabled: true,
-    };
-    if (expiredDate) {
-      client.expiredAt = new Date(expiredDate);
-      client.expiredAt.setHours(23);
-      client.expiredAt.setMinutes(59);
-      client.expiredAt.setSeconds(59);
-    }
-
-    config.clients[id] = client;
-
-    await this.saveConfig();
-
-    return client;
-  }
-
-  async deleteClient({ clientId }) {
-    const config = await this.getConfig();
-
-    if (config.clients[clientId]) {
-      delete config.clients[clientId];
-      await this.saveConfig();
-    }
-  }
-
   async enableClient({ clientId }) {
-    const client = await this.getClient({ clientId });
+      const client = await this.getClient({ clientId });
 
-    client.enabled = true;
-    client.updatedAt = new Date();
+      client.enabled = true;
+      client.updatedAt = new Date();
 
-    await this.saveConfig();
-  }
+      await this.saveConfig(); // Сохранили изменения + применили конфиг
+    }
 
   async generateOneTimeLink({ clientId }) {
     const client = await this.getClient({ clientId });
@@ -405,7 +373,7 @@ Endpoint = ${WG_HOST}:${WG_CONFIG_PORT}`;
     client.oneTimeLink = Math.abs(CRC32.str(key)).toString(16);
     client.oneTimeLinkExpiresAt = new Date(Date.now() + 5 * 60 * 1000);
     client.updatedAt = new Date();
-    await this.saveConfig();
+    await this.saveConfig(); // No restart needed, just update data
   }
 
   async eraseOneTimeLink({ clientId }) {
@@ -413,17 +381,17 @@ Endpoint = ${WG_HOST}:${WG_CONFIG_PORT}`;
     // client.oneTimeLink = null;
     client.oneTimeLinkExpiresAt = new Date(Date.now() + 10 * 1000);
     client.updatedAt = new Date();
-    await this.saveConfig();
+    await this.saveConfig(); // No restart needed, just update data
   }
 
   async disableClient({ clientId }) {
-    const client = await this.getClient({ clientId });
+      const client = await this.getClient({ clientId });
 
-    client.enabled = false;
-    client.updatedAt = new Date();
+      client.enabled = false;
+      client.updatedAt = new Date();
 
-    await this.saveConfig();
-  }
+      await this.saveConfig(); // Сохранили изменения + применили конфиг
+    }
 
   async updateClientName({ clientId, name }) {
     const client = await this.getClient({ clientId });
@@ -431,21 +399,21 @@ Endpoint = ${WG_HOST}:${WG_CONFIG_PORT}`;
     client.name = name;
     client.updatedAt = new Date();
 
-    await this.saveConfig();
+    await this.saveConfig(); // No restart for name change
   }
 
   async updateClientAddress({ clientId, address }) {
-    const client = await this.getClient({ clientId });
+      const client = await this.getClient({ clientId });
 
-    if (!Util.isValidIPv4(address)) {
-      throw new ServerError(`Invalid Address: ${address}`, 400);
+      if (!Util.isValidIPv4(address)) {
+        throw new ServerError(`Invalid Address: ${address}`, 400);
+      }
+
+      client.address = address;
+      client.updatedAt = new Date();
+      await this.saveConfig(); // Сохранили изменения + применили конфиг
+
     }
-
-    client.address = address;
-    client.updatedAt = new Date();
-
-    await this.saveConfig();
-  }
 
   async updateClientExpireDate({ clientId, expireDate }) {
     const client = await this.getClient({ clientId });
@@ -460,33 +428,55 @@ Endpoint = ${WG_HOST}:${WG_CONFIG_PORT}`;
     }
     client.updatedAt = new Date();
 
-    await this.saveConfig();
+    await this.saveConfig(); //No restart required
   }
 
   async __reloadConfig() {
-    await this.__buildConfig();
-    await this.__syncConfig();
+      await this.__buildConfig();
+      try {
+        const config = await this.getConfig(); // Get the config *after* rebuilding.
+        await applyWireGuardConfig(config); // Apply the new config
+
+      } catch (error) {
+        console.error('Error applying WireGuard configuration:', error);  // Более точное сообщение
+        throw new ServerError('Failed to apply WireGuard configuration after reload.', 500); // Более точное сообщение
+      }
   }
 
   async restoreConfiguration(config) {
     debug('Starting configuration restore process.');
-    const _config = JSON.parse(config);
-    await this.__saveConfig(_config);
-    await this.__reloadConfig();
+    try{
+        const _config = config; // Уже объект
+        if (!_config || typeof _config !== 'object' || !_config.server || !_config.clients) {
+            throw new ServerError('Invalid configuration file format', 400);
+        }
+        _config.clients = Object.fromEntries(_config.clients); // Обязательно!
+        await this.__saveConfig(_config);
+        await this.__reloadConfig();
+    } catch (error){
+        console.error('Error restoring configuration:', error);
+        throw new ServerError(`Failed to restore WireGuard configuration: ${error.message}`, error.statusCode || 500); // Pass through status code
+    }
     debug('Configuration restore process completed.');
   }
 
   async backupConfiguration() {
     debug('Starting configuration backup.');
     const config = await this.getConfig();
+    //НЕ НУЖНО config.clients = new Map(Object.entries(config.clients));  // Удали эту строку!
     const backup = JSON.stringify(config, null, 2);
     debug('Configuration backup completed.');
     return backup;
   }
 
   // Shutdown wireguard
-  async Shutdown() {
-    await Util.exec('wg-quick down wg0').catch(() => {});
+    async Shutdown() {
+      await Util.exec('wg setconf wg0 /dev/null').catch(() => {});
+      await Util.exec('ip link delete dev wg0').catch(err => {
+        if (!err.message.includes('Cannot find device')) {
+            throw err;
+        }
+    });
   }
 
   async cronJobEveryMinute() {
@@ -593,3 +583,55 @@ Endpoint = ${WG_HOST}:${WG_CONFIG_PORT}`;
   }
 
 };
+
+async function applyWireGuardConfig(config) {
+  try {
+    // 1. Удаляем интерфейс, если он существует.
+    await Util.exec('wg setconf wg0 /dev/null').catch(() => {});
+        await Util.exec('ip link delete dev wg0').catch(err => {
+        // Игнорируем ошибку, если интерфейс не существует.
+        if (!err.message.includes('Cannot find device')) {
+          throw err;
+        }
+      });
+    // 2. Создаем интерфейс.
+      await Util.exec('ip link add dev wg0 type wireguard').catch(err => {
+        // Игнорируем ошибку, если интерфейс уже существует.
+        if (!err.message.includes('File exists')) { // эта ошибка не должна возникать
+          throw err;
+        }
+      });
+
+    // 3. Устанавливаем приватный ключ сервера.
+    await Util.exec(`wg set wg0 private-key <(echo "${config.server.privateKey}")`);
+
+    // 4. Устанавливаем порт прослушивания.
+    await Util.exec(`wg set wg0 listen-port ${WG_PORT}`);
+
+    // 5. Настраиваем IP-адрес сервера.
+    await Util.exec(`ip address add ${config.server.address}/24 dev wg0`);
+
+    // 6. Поднимаем интерфейс.
+    await Util.exec('ip link set up dev wg0');
+
+
+    // 7. Добавляем пиров (клиентов).
+    for (const [clientId, client] of Object.entries(config.clients)) {
+      if (!client.enabled) continue;
+
+      let peerConfig = `wg set wg0 peer ${client.publicKey} allowed-ips ${client.address}/32`;
+
+      if (client.preSharedKey) {
+        peerConfig += ` preshared-key <(echo "${client.preSharedKey}")`;
+      }
+          await Util.exec(peerConfig);
+    }
+
+      if (WG_MTU) await Util.exec(`ip link set mtu ${WG_MTU} dev wg0`);
+
+
+  } catch (error) {
+    console.error('Error applying WireGuard configuration:', error);
+    throw new ServerError('Failed to apply WireGuard configuration', 500);
+  }
+}

@@ -245,10 +245,18 @@ module.exports = class Server {
         return config;
       }))
       .post('/api/wireguard/client', defineEventHandler(async (event) => {
-        const { name } = await readBody(event);
-        const { expiredDate } = await readBody(event);
-        await WireGuard.createClient({ name, expiredDate });
-        return { success: true };
+        try{
+          const { name } = await readBody(event);
+          const { expiredDate } = await readBody(event);
+          await WireGuard.createClient({ name, expiredDate });
+          return { success: true };
+        } catch (error) {
+              console.error("API Error /api/wireguard/client:", error);
+              throw createError({
+                  statusCode: error.statusCode || 500,
+                  message: error.message || 'Internal Server Error',
+              });
+          }
       }))
       .delete('/api/wireguard/client/:clientId', defineEventHandler(async (event) => {
         const clientId = getRouterParam(event, 'clientId');
@@ -392,10 +400,67 @@ module.exports = class Server {
         return config;
       }))
       .put('/api/wireguard/restore', defineEventHandler(async (event) => {
-        const { file } = await readBody(event);
-        await WireGuard.restoreConfiguration(file);
-        return { success: true };
+        try {
+          const body = await readBody(event);
+
+          if (!body || typeof body !== 'object' || !body.file) {
+            throw createError({ statusCode: 400, message: 'Invalid request body.  Must be an object with a "file" property.' });
+          }
+
+          let parsedConfig;
+          try {
+            parsedConfig = JSON.parse(body.file);
+          } catch (parseError) {
+            throw createError({ statusCode: 400, message: 'Invalid JSON in "file" property.' });
+          }
+
+          if (!isValidConfig(parsedConfig)) { // isValidConfig - твоя функция валидации.
+             throw createError({statusCode: 400, message: 'Invalid configuration data.'});
+          }
+
+          await WireGuard.restoreConfiguration(parsedConfig);
+          return { success: true };
+
+        } catch (error) {
+          console.error('Error restoring configuration:', error);
+            throw createError({
+              statusCode: error.statusCode || 500,
+              message: error.message || 'Internal Server Error',
+          });
+        }
       }));
+
+      function isValidConfig(config) {
+        if (!config || typeof config !== 'object') {
+          return false;
+        }
+
+        if (!config.server || typeof config.server !== 'object' ||
+            !config.server.privateKey || typeof config.server.privateKey !== 'string' ||
+            !config.server.publicKey || typeof config.server.publicKey !== 'string' ||
+            !config.server.address || typeof config.server.address !== 'string') {
+            return false
+        }
+        if (!config.clients || typeof config.clients !== 'object'){ // Проверяем, что clients - объект
+            return false;
+        }
+
+        for (const clientId in config.clients){
+            const client = config.clients[clientId];
+            if (!client || typeof client !== 'object'
+            || !client.id || typeof client.id !== "string"
+            || !client.name || typeof client.name !== "string"
+            || !client.address || typeof client.address !== "string"
+            || !client.privateKey || typeof client.privateKey !== "string"
+            || !client.publicKey || typeof client.publicKey !== "string"
+            || typeof client.enabled !== "boolean"
+            ){
+                return false;
+            }
+        }
+        //  Добавь больше проверок! (preSharedKey, allowedIPs, типы данных, форматы и т.д.)
+        return true;
+    }
 
     // Static assets
     const publicDir = '/app/www';

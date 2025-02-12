@@ -3,9 +3,9 @@ services:
     build:
       context: .
       dockerfile: ./Dockerfile
-    command: npm run serve
+    command: npm start
     volumes:
-      - ./src/:/app/
+       - ./src:/app/src
     ports:
       - "51820:51820/udp"
       - "51821:51821/tcp"
@@ -18,11 +18,17 @@ services:
       PASSWORD_HASH: $$2a$$12$$PdvZzLGdcKTdIaNKVKGGAud4jnytKBOypg/wNI7LKzwTzdWQxjl7u
       MONGO_URI: mongodb://mongo:27017/wgeasy
       WEBUI_HOST: 0.0.0.0
-
     networks:
       - wg-easy-network
     depends_on:
-      - mongo
+      mongo:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:51821/api/session"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   mongo:
     image: mongo:latest
@@ -34,6 +40,12 @@ services:
     restart: unless-stopped
     networks:
       - wg-easy-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh 127.0.0.1:27017/test --quiet
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
 
 volumes:
   mongodb_data:

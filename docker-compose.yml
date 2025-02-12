@@ -4,7 +4,7 @@ version: "3.9"  # Specify the Docker Compose version
 
 volumes:
   etc_wireguard:
-  mongodb_data: # Add a volume for MongoDB data
+  mongodb_data:
 
 services:
   wg-easy:
@@ -44,8 +44,8 @@ services:
     image: ghcr.io/wg-easy/wg-easy
     container_name: wg-easy
     volumes:
-      - etc_wireguard:/etc/wireguard  # Still useful for wg0.conf and scripts.
-      # - ./data/:/etc/wireguard # Remove this when you remove fs functions.
+      # - etc_wireguard:/etc/wireguard  # Still useful for wg0.conf and scripts.
+      - ./data/:/etc/wireguard # Remove this when you remove fs functions.
     ports:
       - "51820:51820/udp"
       - "51821:51821/tcp"
