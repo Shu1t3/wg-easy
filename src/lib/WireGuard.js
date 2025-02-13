@@ -78,12 +78,11 @@ module.exports = class WireGuard {
                   await new Promise(resolve => setTimeout(resolve, retryDelay));
               } else {
                   console.error('Failed to connect to MongoDB after multiple retries.');
-                  throw new Error('Failed to connect to MongoDB after multiple retries.');  // Throw after all retries
+                  throw new Error('Failed to connect to MongoDB after multiple retries.');
               }
             }
         }
 
-        // Загружаем конфиг ПОСЛЕ успешного подключения.
         try {
             config = await WireguardConfig.findOne({});
             if (config) {
@@ -121,7 +120,7 @@ module.exports = class WireGuard {
                 debug('New configuration generated and saved to MongoDB.');
             } catch (error) {
                 console.error("Error creating or saving initial config", error);
-                throw error; // Re-throw for consistent error handling
+                throw error;
             }
           }
 
@@ -627,6 +626,8 @@ async function applyWireGuardConfig(config) {
     }
 
       if (WG_MTU) await Util.exec(`ip link set mtu ${WG_MTU} dev wg0`);
+
+      await Util.exec(WG_POST_UP);
 
 
   } catch (error) {

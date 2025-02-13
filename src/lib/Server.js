@@ -445,20 +445,20 @@ module.exports = class Server {
       .put('/api/wireguard/restore', defineEventHandler(async (event) => {
         try {
           const body = await readBody(event); // body - это { file: parsedConfig }
-      
+
           if (!body || typeof body !== 'object' || !body.file) {
             throw createError({ statusCode: 400, message: 'Invalid request body.  Must be an object with a "file" property.' });
           }
-      
+
           const parsedConfig = body.file; // body.file - это УЖЕ ОБЪЕКТ конфигурации
-      
+
           if (!isValidConfig(parsedConfig)) {
              throw createError({statusCode: 400, message: 'Invalid configuration data.'});
           }
-      
+
           await WireGuard.restoreConfiguration(parsedConfig); // Передаем ОБЪЕКТ
           return { success: true };
-      
+
         } catch (error) {
             console.error("API Error /api/wireguard/restore:", error);
             throw createError({

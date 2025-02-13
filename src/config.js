@@ -10,12 +10,12 @@ module.exports.PASSWORD = process.env.PASSWORD;
 module.exports.PASSWORD_HASH = process.env.PASSWORD_HASH;
 module.exports.MAX_AGE = parseInt(process.env.MAX_AGE, 10) * 1000 * 60 || 0;
 module.exports.WG_PATH = process.env.WG_PATH || '/etc/wireguard/';
-module.exports.WG_DEVICE = process.env.WG_DEVICE || 'eth0';
+module.exports.WG_DEVICE = process.env.WG_DEVICE || 'eth0'; // !!! УБЕДИТЕСЬ, ЧТО ЭТО ПРАВИЛЬНЫЙ ИНТЕРФЕЙС
 module.exports.WG_HOST = process.env.WG_HOST;
 module.exports.WG_PORT = process.env.WG_PORT || '51820';
 module.exports.WG_CONFIG_PORT = process.env.WG_CONFIG_PORT || process.env.WG_PORT || '51820';
 module.exports.WG_MTU = process.env.WG_MTU || null;
-module.exports.WG_PERSISTENT_KEEPALIVE = process.env.WG_PERSISTENT_KEEPALIVE || '0';
+module.exports.WG_PERSISTENT_KEEPALIVE = process.env.WG_PERSISTENT_KEEPALIVE || '0'; //  Лучше установить в 25 на клиенте
 module.exports.WG_DEFAULT_ADDRESS = process.env.WG_DEFAULT_ADDRESS || '10.8.0.x';
 module.exports.WG_DEFAULT_DNS = typeof process.env.WG_DEFAULT_DNS === 'string'
   ? process.env.WG_DEFAULT_DNS
@@ -23,21 +23,22 @@ module.exports.WG_DEFAULT_DNS = typeof process.env.WG_DEFAULT_DNS === 'string'
 module.exports.WG_ALLOWED_IPS = process.env.WG_ALLOWED_IPS || '0.0.0.0/0, ::/0';
 
 module.exports.WG_PRE_UP = process.env.WG_PRE_UP || '';
-module.exports.WG_POST_UP = process.env.WG_POST_UP || `
-iptables -t nat -A POSTROUTING -s ${module.exports.WG_DEFAULT_ADDRESS.replace('x', '0')}/24 -o ${module.exports.WG_DEVICE} -j MASQUERADE;
-iptables -A INPUT -p udp -m udp --dport ${module.exports.WG_PORT} -j ACCEPT;
-iptables -A FORWARD -i wg0 -j ACCEPT;
-iptables -A FORWARD -o wg0 -j ACCEPT;
-`.split('\n').join(' ');
+module.exports.WG_POST_UP = `
+        iptables -t nat -D POSTROUTING -s ${module.exports.WG_DEFAULT_ADDRESS.replace('x', '0')}/24 -o ${module.exports.WG_DEVICE} -j MASQUERADE 2> /dev/null || true;
+        iptables -D INPUT -p udp -m udp --dport ${module.exports.WG_PORT} -j ACCEPT 2> /dev/null || true;
+        iptables -D FORWARD -i wg0 -j ACCEPT 2> /dev/null || true;
+        iptables -D FORWARD -o wg0 -j ACCEPT 2> /dev/null || true;
+
+        iptables -t nat -A POSTROUTING -s ${module.exports.WG_DEFAULT_ADDRESS.replace('x', '0')}/24 -o ${module.exports.WG_DEVICE} -j MASQUERADE;
+        iptables -A INPUT -p udp -m udp --dport ${module.exports.WG_PORT} -j ACCEPT;
+        iptables -A FORWARD -i wg0 -j ACCEPT;
+        iptables -A FORWARD -o wg0 -j ACCEPT;
+        `.split('\n').map(line => line.trim()).join(' ');
 
 module.exports.WG_PRE_DOWN = process.env.WG_PRE_DOWN || '';
-module.exports.WG_POST_DOWN = process.env.WG_POST_DOWN || `
-iptables -t nat -D POSTROUTING -s ${module.exports.WG_DEFAULT_ADDRESS.replace('x', '0')}/24 -o ${module.exports.WG_DEVICE} -j MASQUERADE;
-iptables -D INPUT -p udp -m udp --dport ${module.exports.WG_PORT} -j ACCEPT;
-iptables -D FORWARD -i wg0 -j ACCEPT;
-iptables -D FORWARD -o wg0 -j ACCEPT;
-`.split('\n').join(' ');
-module.exports.LANG = process.env.LANG || 'en';
+module.exports.WG_POST_DOWN = ''; // Больше не нужно
+
+module.exports.LANG = process.env.LANG || 'ru';
 module.exports.UI_TRAFFIC_STATS = process.env.UI_TRAFFIC_STATS || 'false';
 module.exports.UI_CHART_TYPE = process.env.UI_CHART_TYPE || 0;
 module.exports.WG_ENABLE_ONE_TIME_LINKS = process.env.WG_ENABLE_ONE_TIME_LINKS || 'false';
@@ -45,4 +46,7 @@ module.exports.UI_ENABLE_SORT_CLIENTS = process.env.UI_ENABLE_SORT_CLIENTS || 'f
 module.exports.WG_ENABLE_EXPIRES_TIME = process.env.WG_ENABLE_EXPIRES_TIME || 'false';
 module.exports.ENABLE_PROMETHEUS_METRICS = process.env.ENABLE_PROMETHEUS_METRICS || 'false';
 module.exports.PROMETHEUS_METRICS_PASSWORD = process.env.PROMETHEUS_METRICS_PASSWORD;
-module.exports.MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/wgeasy';
+if (!process.env.MONGO_URI) {
+  throw new Error("MONGO_URI environment variable is not set!");
+}
+module.exports.MONGO_URI = process.env.MONGO_URI;

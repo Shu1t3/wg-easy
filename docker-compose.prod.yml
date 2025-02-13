@@ -1,23 +1,30 @@
 services:
   wg-easy:
-    build:
-      context: .
-      dockerfile: ./Dockerfile
+    image: shu1t3/wg-easy-mongo:latest
+    container_name: wg-easy
     command: npm start
     volumes:
        - ./src:/app/src
     ports:
-      - "51820:51820/udp"
-      - "51821:51821/tcp"
+      - "4815:4815/udp"
+      - "4815:4815/tcp"
+      - "2342:2342/tcp"
+      - "2342:2342/udp"
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
     environment:
       LANG: ru
+      PORT: 2342
       WG_HOST: ${WG_HOST}
+      WG_PORT: 4815
       PASSWORD_HASH: ${PASSWORD_HASH}
-      MONGO_URI: mongodb://${MONGO_LOGIN}:${MONGO_PASSWORD}@mongo:27017/wgeasy?authSource=admin
+      MONGO_URI: mongodb://${MONGO_LOGIN}:${MONGO_PASSWORD}@mongo:27017/wgeasy
       WEBUI_HOST: 0.0.0.0
+      WG_DEFAULT_DNS: 76.76.2.22, 76.76.10.22
+      WG_PERSISTENT_KEEPALIVE: 125
+      UI_TRAFFIC_STATS: true
+      UI_ENABLE_SORT_CLIENTS: true
     networks:
       - wg-easy-network
     depends_on:
@@ -30,8 +37,8 @@ services:
       timeout: 10s
       retries: 3
     sysctls:
-      net.ipv4.ip_forward: 1
-      net.ipv4.conf.all.src_valid_mark: 1
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.src_valid_mark=1
 
   mongo:
     image: mongo:latest
